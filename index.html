@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="ms">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sistem Reward Board</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Fredoka:wght@500;600;700&family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css?v=rainbow-star-kingdom-3-nur-izzah" />
+  </head>
+  <body>
+    <div class="page-sparkles" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <div class="page-rainbow" aria-hidden="true"></div>
+
+    <div class="app-shell">
+      <header class="topbar kingdom-header">
+        <div class="hero-copy">
+          <p class="eyebrow">Rainbow Star Kingdom</p>
+          <h1>Sistem Reward Board</h1>
+          <p class="hero-subtitle">Magical Pastel Edition</p>
+          <p class="hero-note">Istana pelangi, awan gebu dan bintang ajaib untuk menjadikan ganjaran murid lebih ceria.</p>
+        </div>
+
+        <div class="hero-art" aria-hidden="true">
+          <div class="hero-cloud hero-cloud-left"></div>
+          <div class="hero-cloud hero-cloud-right"></div>
+          <div class="rainbow-castle">
+            <span class="tower tower-left"></span>
+            <span class="tower tower-center"></span>
+            <span class="tower tower-right"></span>
+            <span class="castle-door"></span>
+          </div>
+          <div class="star-mascot">
+            <span class="mascot-eye left"></span>
+            <span class="mascot-eye right"></span>
+            <span class="mascot-smile"></span>
+          </div>
+          <div class="float-star star-a">✦</div>
+          <div class="float-star star-b">✦</div>
+          <div class="float-star star-c">★</div>
+        </div>
+
+        <div class="top-actions">
+          <span id="syncStatus" class="sync-status">Memuat data...</span>
+          <button id="refreshBtn" class="ghost-btn" type="button" title="Muat semula data murid">⟳</button>
+          <button id="resetScoresBtn" class="danger-btn" type="button">Reset Markah</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="Modul Reward Board">
+        <button class="tab active" data-tab="reward" type="button"><span>⭐</span> Reward</button>
+        <button class="tab" data-tab="groups" type="button"><span>🏰</span> Kumpulan</button>
+        <button class="tab" data-tab="picker" type="button"><span>✨</span> Picker</button>
+        <button class="tab" data-tab="timer" type="button"><span>☁️</span> Timer</button>
+        <button class="tab" data-tab="leaderboard" type="button"><span>🏆</span> Leaderboard</button>
+      </nav>
+
+      <main>
+        <section id="reward" class="panel active panel-reward">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Star Blessing Board</p>
+              <h2>Ganjaran Bintang Individu</h2>
+            </div>
+          </div>
+          <div class="toolbar">
+            <label>
+              Kelas
+              <select id="rewardClass"></select>
+            </label>
+            <label>
+              Cari murid
+              <input id="studentSearch" type="search" placeholder="Taip nama..." />
+            </label>
+          </div>
+          <div id="studentGrid" class="student-grid"></div>
+        </section>
+
+        <section id="groups" class="panel panel-groups">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Rainbow Team Houses</p>
+              <h2>Ganjaran Bintang Berkumpulan</h2>
+            </div>
+          </div>
+          <div class="toolbar multi">
+            <label>
+              Kelas
+              <select id="groupClass"></select>
+            </label>
+            <label>
+              Bilangan kumpulan
+              <input id="groupCount" type="number" min="1" max="12" value="4" />
+            </label>
+            <button id="randomGroupsBtn" class="primary-btn" type="button">Jana Rawak</button>
+            <button id="manualGroupsBtn" class="secondary-btn" type="button">Sedia Manual</button>
+          </div>
+          <div class="split-layout">
+            <aside class="manual-pool">
+              <h2>Senarai Murid</h2>
+              <p class="small-note">Murid yang sudah masuk kumpulan akan menjadi kelabu.</p>
+              <div id="manualStudentList" class="name-list"></div>
+            </aside>
+            <div id="groupBoard" class="group-board"></div>
+          </div>
+        </section>
+
+        <section id="picker" class="panel panel-picker">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Magic Lucky Star</p>
+              <h2>Pemilih Ajaib Murid / Kumpulan</h2>
+            </div>
+          </div>
+          <div class="picker-layout">
+            <div class="picker-stage">
+              <div class="toolbar">
+                <label>
+                  Kelas
+                  <select id="pickerClass"></select>
+                </label>
+                <div class="segmented" role="group" aria-label="Jenis picker">
+                  <button id="pickStudentMode" class="active" type="button">Murid</button>
+                  <button id="pickGroupMode" type="button">Kumpulan</button>
+                </div>
+              </div>
+              <div class="picker-magic-orbit" aria-hidden="true">
+                <span>✦</span><span>★</span><span>✧</span>
+              </div>
+              <div id="pickerDisplay" class="picker-display">Tekan pilih untuk mula</div>
+              <div class="picker-actions">
+                <button id="pickBtn" class="primary-btn big" type="button">Pilih Rawak</button>
+                <button id="pickerAddStar" class="star-btn" type="button" disabled>+ Bintang</button>
+                <button id="pickerMinusStar" class="minus-btn" type="button" disabled>- Bintang</button>
+              </div>
+              <p id="pickerHint" class="small-note">Ganjaran picker akan dikemas kini dalam rekod individu murid.</p>
+            </div>
+            <div id="pickerCandidates" class="candidate-strip"></div>
+          </div>
+        </section>
+
+        <section id="timer" class="panel panel-timer">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Magic Cloud Clock</p>
+              <h2>Jam Aktiviti Awan Ajaib</h2>
+            </div>
+          </div>
+          <div class="timer-card">
+            <div class="timer-clouds" aria-hidden="true"><span></span><span></span><span></span></div>
+            <div id="timerDisplay" class="timer-display">00:01:00</div>
+            <div class="timer-presets">
+              <button data-seconds="60" type="button">1 minit</button>
+              <button data-seconds="180" type="button">3 minit</button>
+              <button data-seconds="300" type="button">5 minit</button>
+              <button data-seconds="30" type="button">30 saat</button>
+            </div>
+            <div class="custom-time">
+              <label>
+                Custom minit
+                <input id="customMinutes" type="number" min="0" value="0" />
+              </label>
+              <label>
+                Custom saat
+                <input id="customSeconds" type="number" min="0" max="59" value="45" />
+              </label>
+              <button id="setCustomTimer" class="secondary-btn" type="button">Tetapkan</button>
+            </div>
+            <div class="timer-controls">
+              <button id="timerStart" class="primary-btn" type="button">Start</button>
+              <button id="timerPause" class="secondary-btn" type="button">Pause</button>
+              <button id="timerReset" class="danger-btn" type="button">Reset</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="leaderboard" class="panel panel-leaderboard">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Star Champions</p>
+              <h2>Kedudukan Juara Bintang</h2>
+            </div>
+          </div>
+          <div class="toolbar">
+            <label>
+              Kelas
+              <select id="leaderClass"></select>
+            </label>
+            <div class="segmented" role="group" aria-label="Jenis leaderboard">
+              <button id="leaderStudentMode" class="active" type="button">Individu</button>
+              <button id="leaderGroupMode" type="button">Kumpulan</button>
+            </div>
+          </div>
+          <div id="leaderboardList" class="leaderboard"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="starBurstLayer" class="star-burst-layer" aria-hidden="true"></div>
+    <script src="app.js?v=rainbow-star-kingdom-3-nur-izzah"></script>
+  </body>
+</html>
