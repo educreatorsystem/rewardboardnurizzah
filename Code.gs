@@ -1,7 +1,7 @@
 const SHEET_ID = '1u_NyNG0ZNQWI2Fpzw7SLUbv7-jiDB11e4CsBHxrBpHM';
-const STATE_KEY = 'reward-board-state-v4';
-const LOG_SHEET_NAME = 'REKOD BINTANG';
-const CURRENT_SHEET_NAME = 'SKOR SEMASA';
+const SCORE_SHEET_NAME = 'Reward Scores';
+const GROUP_SHEET_NAME = 'Reward Groups';
+const LOG_SHEET_NAME = 'Rekod Reward';
 
 function doGet(e) {
   try {
@@ -9,24 +9,8 @@ function doGet(e) {
     const callback = String((e && e.parameter && e.parameter.callback) || '');
 
     if (action === 'getState') {
-      const savedState = readState_();
-      const payload = savedState
-        ? {
-            ok: true,
-            initialized: true,
-            scores: savedState.scores || {},
-            groups: savedState.groups || {},
-            revision: Number(savedState.revision || 0),
-            updatedAt: savedState.updatedAt || ''
-          }
-        : {
-            ok: true,
-            initialized: false,
-            scores: {},
-            groups: {},
-            revision: 0,
-            updatedAt: ''
-          };
+      const ss = SpreadsheetApp.openById(SHEET_ID);
+      const payload = readStateFromSheets_(ss);
       return callback ? jsonpOutput_(callback, payload) : jsonOutput_(payload);
     }
 
@@ -36,11 +20,16 @@ function doGet(e) {
         ok: true,
         spreadsheetId: SHEET_ID,
         spreadsheetName: ss.getName(),
-        sheets: ss.getSheets().map(function(s) { return s.getName(); })
+        sheets: ss.getSheets().map(function(sheet) { return sheet.getName(); })
       });
     }
 
-    return jsonOutput_({ ok: true, message: 'Reward Board Apps Script aktif.', spreadsheetId: SHEET_ID });
+    return jsonOutput_({
+      ok: true,
+      message: 'Reward Board Apps Script aktif.',
+      spreadsheetId: SHEET_ID,
+      source: 'google-sheet'
+    });
   } catch (error) {
     return jsonOutput_({ ok: false, error: error.message });
   }
@@ -50,29 +39,49 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   try {
     lock.waitLock(15000);
+
     const payload = parsePayload_(e);
     const actions = payload.action === 'batch' && Array.isArray(payload.actions)
       ? payload.actions
       : [payload];
 
-    let state = readState_() || defaultState_();
+    const ss = SpreadsheetApp.openById(SHEET_ID);
+    const scoreSheet = getOrCreateSheet_(ss, SCORE_SHEET_NAME);
+    const groupSheet = getOrCreateSheet_(ss, GROUP_SHEET_NAME);
+    const logSheet = getOrCreateSheet_(ss, LOG_SHEET_NAME);
+
+    ensureScoreHeader_(scoreSheet);
+    ensureGroupHeader_(groupSheet);
+    ensureLogHeader_(logSheet);
+
+    const scoreTable = readScoreTable_(scoreSheet);
+    const groupTable = readGroupTable_(groupSheet);
     const logRows = [];
+    let scoreChanged = false;
+    let groupChanged = false;
 
     actions.forEach(function(actionPayload) {
       if (!actionPayload || typeof actionPayload !== 'object') return;
-      applyAction_(state, actionPayload);
-      const row = makeLogRow_(actionPayload);
-      if (row) logRows.push(row);
+      const result = applyActionToTables_(scoreTable, groupTable, actionPayload);
+      scoreChanged = scoreChanged || result.scoreChanged;
+      groupChanged = groupChanged || result.groupChanged;
+
+      const logRow = makeLogRow_(actionPayload);
+      if (logRow) logRows.push(logRow);
     });
 
-    state.revision = Number(state.revision || 0) + 1;
-    state.updatedAt = new Date().toISOString();
-    saveState_(state);
+    if (scoreChanged) writeScoreTable_(scoreSheet, scoreTable.rows);
+    if (groupChanged) writeGroupTable_(groupSheet, groupTable.rows);
+    if (logRows.length) appendLogRows_(logSheet, logRows);
 
-    appendLogRows_(logRows);
-    writeCurrentScores_(state, actions);
+    SpreadsheetApp.flush();
 
-    return jsonOutput_({ ok: true, revision: state.revision, updatedAt: state.updatedAt, rowsWritten: logRows.length });
+    return jsonOutput_({
+      ok: true,
+      rowsWritten: logRows.length,
+      updatedAt: new Date().toISOString(),
+      source: 'google-sheet'
+    });
   } catch (error) {
     console.error(error && error.stack ? error.stack : error);
     return jsonOutput_({ ok: false, error: error.message });
@@ -81,54 +90,228 @@ function doPost(e) {
   }
 }
 
-function applyAction_(state, payload) {
-  const action = String(payload.action || '');
+function readStateFromSheets_(ss) {
+  const scoreSheet = getOrCreateSheet_(ss, SCORE_SHEET_NAME);
+  const groupSheet = getOrCreateSheet_(ss, GROUP_SHEET_NAME);
+  ensureScoreHeader_(scoreSheet);
+  ensureGroupHeader_(groupSheet);
 
-  if (action === 'replaceState') {
-    state.scores = isPlainObject_(payload.scores) ? payload.scores : {};
-    state.groups = isPlainObject_(payload.groups) ? payload.groups : {};
-    return;
-  }
+  const scoreTable = readScoreTable_(scoreSheet);
+  const groupTable = readGroupTable_(groupSheet);
+  const scores = {};
+  const groups = {};
+  let latestTimestamp = 0;
+
+  scoreTable.rows.forEach(function(row) {
+    const studentId = String(row[0] || '').trim();
+    if (!studentId) return;
+    scores[studentId] = Math.max(0, Number(row[3] || 0));
+    latestTimestamp = Math.max(latestTimestamp, toMillis_(row[4]));
+  });
+
+  groupTable.rows.forEach(function(row) {
+    const className = String(row[0] || '').trim();
+    if (!className) return;
+    try {
+      const parsed = JSON.parse(String(row[1] || '[]'));
+      groups[className] = Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      groups[className] = [];
+    }
+    latestTimestamp = Math.max(latestTimestamp, toMillis_(row[2]));
+  });
+
+  return {
+    ok: true,
+    initialized: true,
+    scores: scores,
+    groups: groups,
+    revision: Date.now(),
+    updatedAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : '',
+    source: 'google-sheet'
+  };
+}
+
+function applyActionToTables_(scoreTable, groupTable, payload) {
+  const action = String(payload.action || '');
+  const now = new Date();
+  let scoreChanged = false;
+  let groupChanged = false;
 
   if (action === 'studentReward') {
-    const studentId = String(payload.studentId || '');
-    if (!studentId) return;
-    state.scores[studentId] = Math.max(0, Number(payload.score || 0));
-    return;
+    const studentId = String(payload.studentId || '').trim();
+    if (studentId) {
+      upsertScore_(scoreTable, {
+        studentId: studentId,
+        className: String(payload.className || ''),
+        studentName: String(payload.studentName || payload.targetName || ''),
+        score: Math.max(0, Number(payload.score || 0)),
+        updatedAt: now
+      });
+      scoreChanged = true;
+    }
   }
 
   if (action === 'groupReward') {
-    const className = String(payload.className || '');
-    if (className && Array.isArray(payload.groups)) state.groups[className] = payload.groups;
+    const className = String(payload.className || '').trim();
+    if (className && Array.isArray(payload.groups)) {
+      upsertGroup_(groupTable, className, payload.groups, now);
+      groupChanged = true;
+    }
+
     if (Array.isArray(payload.affectedStudentRecords)) {
       payload.affectedStudentRecords.forEach(function(student) {
-        const id = String((student && student.id) || '');
-        if (!id) return;
-        state.scores[id] = Math.max(0, Number(student.score || 0));
+        if (!student || !student.id) return;
+        upsertScore_(scoreTable, {
+          studentId: String(student.id),
+          className: String(student.className || className || ''),
+          studentName: String(student.name || ''),
+          score: Math.max(0, Number(student.score || 0)),
+          updatedAt: now
+        });
+        scoreChanged = true;
       });
     }
-    return;
   }
 
   if (action === 'saveGroups') {
-    const className = String(payload.className || '');
-    if (className && Array.isArray(payload.groups)) state.groups[className] = payload.groups;
-    return;
+    const className = String(payload.className || '').trim();
+    if (className && Array.isArray(payload.groups)) {
+      upsertGroup_(groupTable, className, payload.groups, now);
+      groupChanged = true;
+    }
   }
 
   if (action === 'resetScores') {
-    Object.keys(state.scores || {}).forEach(function(studentId) { state.scores[studentId] = 0; });
-    Object.keys(state.groups || {}).forEach(function(className) {
-      (state.groups[className] || []).forEach(function(group) { group.stars = 0; });
+    scoreTable.rows.forEach(function(row) {
+      row[3] = 0;
+      row[4] = now;
     });
+    groupTable.rows.forEach(function(row) {
+      let groups = [];
+      try {
+        groups = JSON.parse(String(row[1] || '[]'));
+      } catch (ignore) {}
+      if (!Array.isArray(groups)) groups = [];
+      groups.forEach(function(group) { group.stars = 0; });
+      row[1] = JSON.stringify(groups);
+      row[2] = now;
+    });
+    scoreChanged = true;
+    groupChanged = true;
+  }
+
+  // Keserasian dengan frontend lama. Google Sheet tetap sumber utama.
+  if (action === 'replaceState') {
+    if (payload.scores && typeof payload.scores === 'object' && !Array.isArray(payload.scores)) {
+      Object.keys(payload.scores).forEach(function(studentId) {
+        const index = scoreTable.indexById[studentId];
+        if (index !== undefined) {
+          scoreTable.rows[index][3] = Math.max(0, Number(payload.scores[studentId] || 0));
+          scoreTable.rows[index][4] = now;
+          scoreChanged = true;
+        }
+      });
+    }
+    if (payload.groups && typeof payload.groups === 'object' && !Array.isArray(payload.groups)) {
+      Object.keys(payload.groups).forEach(function(className) {
+        if (!Array.isArray(payload.groups[className])) return;
+        upsertGroup_(groupTable, className, payload.groups[className], now);
+        groupChanged = true;
+      });
+    }
+  }
+
+  return { scoreChanged: scoreChanged, groupChanged: groupChanged };
+}
+
+function readScoreTable_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const rawRows = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, 5).getValues() : [];
+  const rows = [];
+  const indexById = {};
+
+  rawRows.forEach(function(row) {
+    const studentId = String(row[0] || '').trim();
+    if (!studentId || indexById[studentId] !== undefined) return;
+    indexById[studentId] = rows.length;
+    rows.push([studentId, row[1] || '', row[2] || '', Math.max(0, Number(row[3] || 0)), row[4] || '']);
+  });
+
+  return { rows: rows, indexById: indexById };
+}
+
+function readGroupTable_(sheet) {
+  const lastRow = sheet.getLastRow();
+  const rawRows = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, 3).getValues() : [];
+  const rows = [];
+  const indexByClass = {};
+
+  rawRows.forEach(function(row) {
+    const className = String(row[0] || '').trim();
+    if (!className || indexByClass[className] !== undefined) return;
+    indexByClass[className] = rows.length;
+    rows.push([className, String(row[1] || '[]'), row[2] || '']);
+  });
+
+  return { rows: rows, indexByClass: indexByClass };
+}
+
+function upsertScore_(table, record) {
+  const id = String(record.studentId || '').trim();
+  if (!id) return;
+  const row = [
+    id,
+    String(record.className || ''),
+    String(record.studentName || ''),
+    Math.max(0, Number(record.score || 0)),
+    record.updatedAt || new Date()
+  ];
+
+  const index = table.indexById[id];
+  if (index === undefined) {
+    table.indexById[id] = table.rows.length;
+    table.rows.push(row);
+  } else {
+    table.rows[index] = row;
+  }
+}
+
+function upsertGroup_(table, className, groups, updatedAt) {
+  className = String(className || '').trim();
+  if (!className) return;
+  const row = [className, JSON.stringify(groups || []), updatedAt || new Date()];
+  const index = table.indexByClass[className];
+  if (index === undefined) {
+    table.indexByClass[className] = table.rows.length;
+    table.rows.push(row);
+  } else {
+    table.rows[index] = row;
+  }
+}
+
+function writeScoreTable_(sheet, rows) {
+  const oldRows = Math.max(0, sheet.getLastRow() - 1);
+  if (rows.length) sheet.getRange(2, 1, rows.length, 5).setValues(rows);
+  if (oldRows > rows.length) {
+    sheet.getRange(rows.length + 2, 1, oldRows - rows.length, 5).clearContent();
+  }
+}
+
+function writeGroupTable_(sheet, rows) {
+  const oldRows = Math.max(0, sheet.getLastRow() - 1);
+  if (rows.length) sheet.getRange(2, 1, rows.length, 3).setValues(rows);
+  if (oldRows > rows.length) {
+    sheet.getRange(rows.length + 2, 1, oldRows - rows.length, 3).clearContent();
   }
 }
 
 function makeLogRow_(payload) {
-  if (payload.action === 'replaceState' || payload.action === 'saveGroups') return null;
+  const action = String(payload.action || '');
+  if (action === 'replaceState' || action === 'saveGroups') return null;
   return [
     payload.timestamp || new Date().toISOString(),
-    payload.action || '',
+    action,
     payload.type || '',
     payload.className || '',
     payload.targetName || payload.studentName || payload.groupName || '',
@@ -138,111 +321,30 @@ function makeLogRow_(payload) {
   ];
 }
 
-function appendLogRows_(rows) {
+function appendLogRows_(sheet, rows) {
   if (!rows.length) return;
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet_(ss, LOG_SHEET_NAME);
-  ensureLogHeader_(sheet);
   sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 8).setValues(rows);
-  SpreadsheetApp.flush();
 }
 
-function writeCurrentScores_(state, actions) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = getOrCreateSheet_(ss, CURRENT_SHEET_NAME);
-  ensureCurrentHeader_(sheet);
-
-  const metadata = {};
-  actions.forEach(function(payload) {
-    if (!payload || typeof payload !== 'object') return;
-    if (payload.action === 'studentReward' && payload.studentId) {
-      metadata[String(payload.studentId)] = {
-        className: String(payload.className || ''),
-        name: String(payload.studentName || payload.targetName || ''),
-        source: 'Individu'
-      };
-    }
-    if (payload.action === 'groupReward' && Array.isArray(payload.affectedStudentRecords)) {
-      payload.affectedStudentRecords.forEach(function(student) {
-        if (!student || !student.id) return;
-        metadata[String(student.id)] = {
-          className: String(student.className || payload.className || ''),
-          name: String(student.name || ''),
-          source: String(payload.groupName || payload.targetName || 'Kumpulan')
-        };
-      });
-    }
-  });
-
-  const lastRow = sheet.getLastRow();
-  const existing = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, 6).getValues() : [];
-  const rowById = {};
-  existing.forEach(function(row, i) {
-    const id = String(row[0] || '');
-    if (id) rowById[id] = i + 2;
-  });
-
-  const now = new Date();
-  Object.keys(metadata).forEach(function(studentId) {
-    const info = metadata[studentId];
-    const score = Math.max(0, Number((state.scores || {})[studentId] || 0));
-    const values = [[studentId, info.className, info.name, score, now, info.source]];
-    if (rowById[studentId]) {
-      sheet.getRange(rowById[studentId], 1, 1, 6).setValues(values);
-    } else {
-      sheet.getRange(sheet.getLastRow() + 1, 1, 1, 6).setValues(values);
-    }
-  });
-
-  if (actions.some(function(a) { return a && a.action === 'resetScores'; })) {
-    const rows = sheet.getLastRow() - 1;
-    if (rows > 0) {
-      const values = sheet.getRange(2, 1, rows, 6).getValues();
-      values.forEach(function(row) {
-        row[3] = 0;
-        row[4] = now;
-        row[5] = 'Reset';
-      });
-      sheet.getRange(2, 1, rows, 6).setValues(values);
-    }
+function ensureScoreHeader_(sheet) {
+  const expected = ['Student ID', 'Kelas', 'Nama Murid', 'Bintang', 'Updated At'];
+  if (sheet.getLastRow() === 0 || !sheet.getRange(1, 1).getValue()) {
+    sheet.getRange(1, 1, 1, expected.length).setValues([expected]);
   }
-  SpreadsheetApp.flush();
+}
+
+function ensureGroupHeader_(sheet) {
+  const expected = ['Kelas', 'Groups JSON', 'Updated At'];
+  if (sheet.getLastRow() === 0 || !sheet.getRange(1, 1).getValue()) {
+    sheet.getRange(1, 1, 1, expected.length).setValues([expected]);
+  }
 }
 
 function ensureLogHeader_(sheet) {
-  if (sheet.getLastRow() > 0 && sheet.getRange(1, 1).getValue()) return;
-  sheet.getRange(1, 1, 1, 8).setValues([[
-    'Timestamp','Action','Jenis','Kelas','Sasaran','Perubahan Bintang','Jumlah Terkini','Murid Terlibat'
-  ]]);
-}
-
-function ensureCurrentHeader_(sheet) {
-  if (sheet.getLastRow() > 0 && sheet.getRange(1, 1).getValue()) return;
-  sheet.getRange(1, 1, 1, 6).setValues([[
-    'Student ID','Kelas','Nama Murid','Jumlah Bintang','Kemaskini Terakhir','Sumber'
-  ]]);
-}
-
-function readState_() {
-  const raw = PropertiesService.getScriptProperties().getProperty(STATE_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return {
-      scores: isPlainObject_(parsed.scores) ? parsed.scores : {},
-      groups: isPlainObject_(parsed.groups) ? parsed.groups : {},
-      revision: Number(parsed.revision || 0),
-      updatedAt: String(parsed.updatedAt || '')
-    };
-  } catch (error) { return null; }
-}
-
-function saveState_(state) {
-  PropertiesService.getScriptProperties().setProperty(STATE_KEY, JSON.stringify(state));
-}
-
-function defaultState_() {
-  return { scores: {}, groups: {}, revision: 0, updatedAt: '' };
+  const expected = ['Timestamp','Action','Jenis','Kelas','Sasaran','Perubahan Bintang','Jumlah Terkini','Murid Terlibat'];
+  if (sheet.getLastRow() === 0 || !sheet.getRange(1, 1).getValue()) {
+    sheet.getRange(1, 1, 1, expected.length).setValues([expected]);
+  }
 }
 
 function parsePayload_(e) {
@@ -261,8 +363,11 @@ function getOrCreateSheet_(ss, name) {
   return ss.getSheetByName(name) || ss.insertSheet(name);
 }
 
-function isPlainObject_(value) {
-  return value && typeof value === 'object' && !Array.isArray(value);
+function toMillis_(value) {
+  if (!value) return 0;
+  if (Object.prototype.toString.call(value) === '[object Date]') return value.getTime();
+  const millis = new Date(value).getTime();
+  return Number.isFinite(millis) ? millis : 0;
 }
 
 function jsonOutput_(data) {
@@ -271,5 +376,6 @@ function jsonOutput_(data) {
 
 function jsonpOutput_(callback, data) {
   if (!/^[A-Za-z_$][0-9A-Za-z_$]*$/.test(callback)) return jsonOutput_(data);
-  return ContentService.createTextOutput(callback + '(' + JSON.stringify(data) + ');').setMimeType(ContentService.MimeType.JAVASCRIPT);
+  return ContentService.createTextOutput(callback + '(' + JSON.stringify(data) + ');')
+    .setMimeType(ContentService.MimeType.JAVASCRIPT);
 }

@@ -4,10 +4,8 @@ const CSV_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pub?gi
 const GVIZ_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/gviz/tq?gid=0&headers=1&tqx=out:json`;
 const CSV_FALLBACK_URLS = [
   CSV_URL,
-  `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/gviz/tq?gid=0&headers=1&tqx=out:csv`,
-  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?gid=0&headers=1&tqx=out:csv`
+  `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/gviz/tq?gid=0&headers=1&tqx=out:csv`
 ];
-const STUDENT_CACHE_KEY = "reward-board-students-cache-v1";
 const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbzXFP3PvpMxDC983K_N-mew7WOCifycnR3uYGCiyLVvkUr21DSBEja0Tay_OeRSrMTF/exec";
 const STORAGE_KEY = "reward-board-state-v2";
 const SYNC_INTERVAL_MS = 8000;
@@ -39,12 +37,12 @@ let backendFlushTimer = null;
 let backendInFlight = false;
 let localSaveTimer = null;
 let leaderboardRenderQueued = false;
+let backendVerifyTimer = null;
 let audioCtx = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   bindElements();
   bindEvents();
-  loadLocalState();
   loadStudents();
   renderTimer();
 });
@@ -102,41 +100,34 @@ function bindEvents() {
 }
 
 async function loadStudents() {
-  setSync("Memuat data murid...");
+  setSync("Memuat data murid dari Google Sheet...");
   const errors = [];
 
   for (const url of CSV_FALLBACK_URLS) {
     try {
       const rows = await loadStudentsFromCsvUrl(url);
-      applyStudentRows(rows);
+      await applyStudentRows(rows);
       return;
     } catch (error) {
       errors.push(error);
-      console.warn("CSV endpoint gagal:", url, error);
+      console.warn("Endpoint Google Sheet gagal:", url, error);
     }
   }
 
   try {
-    applyStudentRows(await loadStudentsFromGviz());
+    await applyStudentRows(await loadStudentsFromGviz());
     return;
   } catch (gvizError) {
     errors.push(gvizError);
   }
 
-  const cached = loadCachedStudents();
-  if (cached.length) {
-    state.students = cached;
-    ensureScoreKeys();
-    ensureGroupsForClasses();
-    populateClassSelectors();
-    renderAll();
-    setSync(`${cached.length} murid dimuat dari cache`);
-    startSyncPolling();
-    console.warn(...errors);
-    return;
-  }
-
-  showFallbackStudents(...errors);
+  state.students = [];
+  state.scores = {};
+  state.groups = {};
+  populateClassSelectors();
+  renderAll();
+  setSync("Gagal memuat nama murid · semak CSV");
+  console.warn(...errors);
 }
 
 async function loadStudentsFromCsvUrl(url) {
@@ -161,7 +152,7 @@ async function loadStudentsFromCsvUrl(url) {
   return rows;
 }
 
-function applyStudentRows(rows) {
+async function applyStudentRows(rows) {
   const parsed = rows
     .map((row) => ({
       className: cleanCell(row[0]),
@@ -169,42 +160,28 @@ function applyStudentRows(rows) {
     }))
     .filter((row) => row.className && row.name)
     .filter((row) => !/^kelas$/i.test(row.className) && !/^nama/i.test(row.name))
-    .map((row, index) => ({
-      id: makeStudentId(row.className, row.name, index),
+    .map((row) => ({
+      id: makeStudentId(row.className, row.name),
       className: row.className,
       name: row.name
     }));
 
   if (!parsed.length) throw new Error("Google Sheet tiada data murid");
+
+  // Sumber utama nama/kelas ialah CSV Google Sheet semasa.
   state.students = parsed;
-  saveStudentCache(parsed);
+  // Skor dan kumpulan pula mesti datang daripada Apps Script / Google Sheet,
+  // bukan localStorage lama pada peranti ini.
+  state.scores = {};
+  state.groups = {};
   ensureScoreKeys();
   ensureGroupsForClasses();
-  saveLocalState();
   populateClassSelectors();
   renderAll();
-  setSync(`${parsed.length} murid dimuat`);
-  syncFromBackend(true);
+  setSync(`${parsed.length} murid dimuat · menyelaras data semasa...`);
+
+  await syncFromBackend(true);
   startSyncPolling();
-}
-
-
-function saveStudentCache(students) {
-  try {
-    localStorage.setItem(STUDENT_CACHE_KEY, JSON.stringify(students));
-  } catch (error) {
-    console.warn("Cache murid tidak dapat disimpan", error);
-  }
-}
-
-function loadCachedStudents() {
-  try {
-    const cached = JSON.parse(localStorage.getItem(STUDENT_CACHE_KEY) || "[]");
-    if (!Array.isArray(cached)) return [];
-    return cached.filter((student) => student && student.id && student.className && student.name);
-  } catch {
-    return [];
-  }
 }
 
 function loadStudentsFromGviz() {
@@ -248,18 +225,6 @@ function loadStudentsFromGviz() {
   });
 }
 
-function showFallbackStudents(...errors) {
-    if (!state.students.length) {
-      state.students = sampleStudents();
-      ensureScoreKeys();
-      ensureGroupsForClasses();
-      populateClassSelectors();
-      renderAll();
-    }
-    setSync("Guna data sementara");
-    console.warn(...errors);
-}
-
 function parseCsv(text) {
   const rows = [];
   let row = [];
@@ -296,8 +261,8 @@ function cleanCell(value) {
   return String(value || "").trim();
 }
 
-function makeStudentId(className, name, index) {
-  return `${slug(className)}__${slug(name)}__${index}`;
+function makeStudentId(className, name) {
+  return `${slug(className)}__${slug(name)}`;
 }
 
 function slug(value) {
@@ -330,47 +295,27 @@ function startSyncPolling() {
 async function syncFromBackend(force) {
   const hasPendingWrites = backendQueue.length > 0 || backendInFlight;
   if (!force && (Date.now() - state.lastLocalChangeAt < LOCAL_SYNC_GUARD_MS || hasPendingWrites)) return;
+
   try {
     const backendState = await loadBackendState();
-    if (!backendState || !backendState.ok) throw new Error("State backend tidak sah");
-
-    // Backend lama hanya memulangkan {ok:true,message:...}. Jangan sesekali
-    // kosongkan skor tempatan jika endpoint getState belum disokong.
-    const supportsSharedState = Object.prototype.hasOwnProperty.call(backendState, "initialized")
-      || Object.prototype.hasOwnProperty.call(backendState, "scores")
-      || Object.prototype.hasOwnProperty.call(backendState, "groups");
-    if (!supportsSharedState) {
-      state.backendSupportsBatch = false;
-      setSync("Sync tempatan");
-      return;
+    if (!backendState || !backendState.ok) {
+      throw new Error(backendState?.error || "Data backend tidak sah");
     }
+
     state.backendSupportsBatch = true;
-
-    // Deploy baharu: jadikan data browser semasa sebagai state permulaan supaya
-    // rekod sedia ada tidak hilang pada sync pertama.
-    if (backendState.initialized === false) {
-      postBackendAction({
-        action: "replaceState",
-        scores: state.scores,
-        groups: state.groups
-      }, true);
-      setSync("Menyediakan sync...");
-      return;
-    }
-
-    const revision = Number(backendState.revision || 0);
-    if (!force && revision && revision < state.lastBackendRevision) return;
-
     state.scores = backendState.scores || {};
     state.groups = backendState.groups || {};
-    state.lastBackendRevision = revision;
+    state.lastBackendRevision = Number(backendState.revision || Date.now());
     ensureScoreKeys();
     ensureGroupsForClasses();
+
+    // localStorage hanya cache kecemasan. Paparan utama tetap datang dari Google Sheet.
     saveLocalState();
     renderAll();
-    setSync(`Sync ${new Date().toLocaleTimeString("ms-MY", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`);
+    const stamp = new Date().toLocaleTimeString("ms-MY", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setSync(`Data semasa Google Sheet · ${stamp}`);
   } catch (error) {
-    setSync("Sync tempatan");
+    setSync("Nama murid dimuat · sync skor Google Sheet gagal");
     console.warn(error);
   }
 }
@@ -457,6 +402,12 @@ function submitBackendPayload(payload) {
   document.body.appendChild(form);
   form.submit();
 
+  clearTimeout(backendVerifyTimer);
+  backendVerifyTimer = setTimeout(() => {
+    backendVerifyTimer = null;
+    syncFromBackend(true);
+  }, 2800);
+
   setTimeout(() => {
     form.remove();
     iframe.remove();
@@ -476,7 +427,7 @@ async function flushBackendQueue() {
       timestamp: new Date().toISOString(),
       actions
     });
-    setSync("Dihantar ke Google Sheet");
+    setSync("Dihantar · mengesahkan data Google Sheet...");
   } catch (error) {
     backendQueue = actions.concat(backendQueue);
     setSync("Simpan tempatan");
