@@ -1,5 +1,13 @@
-const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSJ1CEMdOvi3r-wytQTkXKB7H2S6t8KYrX3l5AtXwpGcDP984IuiJ15np8pmWjiln3JkukmlpOqjeod/pub?gid=0&single=true&output=csv";
-const GVIZ_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSJ1CEMdOvi3r-wytQTkXKB7H2S6t8KYrX3l5AtXwpGcDP984IuiJ15np8pmWjiln3JkukmlpOqjeod/gviz/tq?gid=0&headers=1&tqx=out:json";
+const SHEET_ID = "1u_NyNG0ZNQWI2Fpzw7SLUbv7-jiDB11e4CsBHxrBpHM";
+const PUBLISHED_ID = "2PACX-1vSJ1CEMdOvi3r-wytQTkXKB7H2S6t8KYrX3l5AtXwpGcDP984IuiJ15np8pmWjiln3JkukmlpOqjeod";
+const CSV_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pub?gid=0&single=true&output=csv`;
+const GVIZ_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/gviz/tq?gid=0&headers=1&tqx=out:json`;
+const CSV_FALLBACK_URLS = [
+  CSV_URL,
+  `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/gviz/tq?gid=0&headers=1&tqx=out:csv`,
+  `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?gid=0&headers=1&tqx=out:csv`
+];
+const STUDENT_CACHE_KEY = "reward-board-students-cache-v1";
 const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbzXFP3PvpMxDC983K_N-mew7WOCifycnR3uYGCiyLVvkUr21DSBEja0Tay_OeRSrMTF/exec";
 const STORAGE_KEY = "reward-board-state-v2";
 const SYNC_INTERVAL_MS = 8000;
@@ -94,19 +102,63 @@ function bindEvents() {
 }
 
 async function loadStudents() {
-  setSync("Memuat data...");
-  try {
-    const response = await fetch(`${CSV_URL}&t=${Date.now()}`, { cache: "no-store" });
-    if (!response.ok) throw new Error("CSV tidak dapat dimuat");
-    const text = await response.text();
-    applyStudentRows(parseCsv(text));
-  } catch (csvError) {
+  setSync("Memuat data murid...");
+  const errors = [];
+
+  for (const url of CSV_FALLBACK_URLS) {
     try {
-      applyStudentRows(await loadStudentsFromGviz());
-    } catch (gvizError) {
-      showFallbackStudents(csvError, gvizError);
+      const rows = await loadStudentsFromCsvUrl(url);
+      applyStudentRows(rows);
+      return;
+    } catch (error) {
+      errors.push(error);
+      console.warn("CSV endpoint gagal:", url, error);
     }
   }
+
+  try {
+    applyStudentRows(await loadStudentsFromGviz());
+    return;
+  } catch (gvizError) {
+    errors.push(gvizError);
+  }
+
+  const cached = loadCachedStudents();
+  if (cached.length) {
+    state.students = cached;
+    ensureScoreKeys();
+    ensureGroupsForClasses();
+    populateClassSelectors();
+    renderAll();
+    setSync(`${cached.length} murid dimuat dari cache`);
+    startSyncPolling();
+    console.warn(...errors);
+    return;
+  }
+
+  showFallbackStudents(...errors);
+}
+
+async function loadStudentsFromCsvUrl(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  const response = await fetch(`${url}${separator}cache=${Date.now()}`, {
+    method: "GET",
+    mode: "cors",
+    credentials: "omit",
+    cache: "no-store",
+    redirect: "follow"
+  });
+  if (!response.ok) throw new Error(`Google Sheet gagal dimuat (${response.status})`);
+  const text = await response.text();
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error("Google Sheet memulangkan data kosong");
+  if (/^<!doctype html|^<html/i.test(trimmed)) {
+    throw new Error("Google Sheet memulangkan halaman HTML, bukan CSV");
+  }
+  const rows = parseCsv(text);
+  const hasStudentRows = rows.some((row) => cleanCell(row[0]) && cleanCell(row[1]) && !/^kelas$/i.test(cleanCell(row[0])));
+  if (!hasStudentRows) throw new Error("CSV tidak mengandungi KELAS dan NAMA MURID");
+  return rows;
 }
 
 function applyStudentRows(rows) {
@@ -125,6 +177,7 @@ function applyStudentRows(rows) {
 
   if (!parsed.length) throw new Error("Google Sheet tiada data murid");
   state.students = parsed;
+  saveStudentCache(parsed);
   ensureScoreKeys();
   ensureGroupsForClasses();
   saveLocalState();
@@ -133,6 +186,25 @@ function applyStudentRows(rows) {
   setSync(`${parsed.length} murid dimuat`);
   syncFromBackend(true);
   startSyncPolling();
+}
+
+
+function saveStudentCache(students) {
+  try {
+    localStorage.setItem(STUDENT_CACHE_KEY, JSON.stringify(students));
+  } catch (error) {
+    console.warn("Cache murid tidak dapat disimpan", error);
+  }
+}
+
+function loadCachedStudents() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(STUDENT_CACHE_KEY) || "[]");
+    if (!Array.isArray(cached)) return [];
+    return cached.filter((student) => student && student.id && student.className && student.name);
+  } catch {
+    return [];
+  }
 }
 
 function loadStudentsFromGviz() {
