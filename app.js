@@ -474,16 +474,16 @@ function studentCard(student) {
   return `
     <article class="student-card" data-student-card="${escapeHtml(student.id)}">
       <div>
-        <div class="student-name">🌟 ${escapeHtml(student.name)}</div>
+        <div class="student-name">🧭 ${escapeHtml(student.name)}</div>
         <div class="meta">${escapeHtml(student.className)}</div>
       </div>
       <div class="score-line">
-        <span class="stars">⭐ ${score}</span>
-        <span class="meta">Star Hero</span>
+        <span class="stars">🪙 ${score}</span>
+        <span class="meta">Pengembara</span>
       </div>
       <div class="card-actions">
-        <button class="star-btn" data-reward-student="${escapeHtml(student.id)}" data-delta="1" type="button">+ ⭐</button>
-        <button class="minus-btn" data-reward-student="${escapeHtml(student.id)}" data-delta="-1" type="button">- ⭐</button>
+        <button class="star-btn" data-reward-student="${escapeHtml(student.id)}" data-delta="1" type="button">+ 🪙</button>
+        <button class="minus-btn" data-reward-student="${escapeHtml(student.id)}" data-delta="-1" type="button">- 🪙</button>
       </div>
     </article>
   `;
@@ -493,7 +493,7 @@ function updateStudentScoreDisplay(studentId) {
   const card = el.studentGrid.querySelector(`[data-student-card="${studentId}"]`);
   if (!card) return;
   const stars = card.querySelector(".stars");
-  if (stars) stars.textContent = `⭐ ${state.scores[studentId] || 0}`;
+  if (stars) stars.textContent = `🪙 ${state.scores[studentId] || 0}`;
   card.classList.remove("pop");
   void card.offsetWidth;
   card.classList.add("pop");
@@ -505,7 +505,7 @@ function updateGroupScoreDisplay(groupId) {
   if (!card) return;
   const stars = card.querySelector(".group-head .stars");
   const group = Object.values(state.groups).flat().find((item) => item.id === groupId);
-  if (stars && group) stars.textContent = `⭐ ${group.stars || 0}`;
+  if (stars && group) stars.textContent = `🪙 ${group.stars || 0}`;
   card.classList.remove("pop");
   void card.offsetWidth;
   card.classList.add("pop");
@@ -621,17 +621,17 @@ function groupCard(className, group, groupIndex) {
     <article class="group-card group-theme-${groupIndex % 6}" data-group-card="${escapeHtml(group.id)}">
       <div class="group-head">
         <div>
-          <div class="group-title">🏰 ${escapeHtml(group.name)}</div>
+          <div class="group-title">⛵ ${escapeHtml(group.name)}</div>
           <div class="meta">${members.length} ahli</div>
         </div>
-        <div class="stars">⭐ ${group.stars || 0}</div>
+        <div class="stars">🪙 ${group.stars || 0}</div>
       </div>
       <div class="member-list" data-group-drop="${escapeHtml(group.id)}">
         ${members.map((student, index) => `<span class="member-pill"><b>${index + 1}</b>${escapeHtml(student.name)}</span>`).join("") || `<span class="drop-hint">Lepaskan nama murid di sini</span>`}
       </div>
       <div class="card-actions">
-        <button class="star-btn" data-reward-group="${escapeHtml(group.id)}" data-delta="1" type="button">+ ⭐</button>
-        <button class="minus-btn" data-reward-group="${escapeHtml(group.id)}" data-delta="-1" type="button">- ⭐</button>
+        <button class="star-btn" data-reward-group="${escapeHtml(group.id)}" data-delta="1" type="button">+ 🪙</button>
+        <button class="minus-btn" data-reward-group="${escapeHtml(group.id)}" data-delta="-1" type="button">- 🪙</button>
       </div>
     </article>
   `;
@@ -845,7 +845,7 @@ function renderLeaderboard() {
       <div class="podium-rank">Tempat ${place}</div>
       <div class="podium-name">${escapeHtml(topThree[place - 1].name)}</div>
       <div class="podium-detail">${escapeHtml(topThree[place - 1].detail)}</div>
-      <div class="leader-stars">⭐ ${topThree[place - 1].score}</div>
+      <div class="leader-stars">🪙 ${topThree[place - 1].score}</div>
     </article>
   ` : `<article class="podium-card place-${place}"><div class="podium-rank">Tempat ${place}</div><div class="empty-state">Belum ada juara</div></article>`).join("");
 
@@ -869,7 +869,7 @@ function renderLeaderboard() {
               <div class="bar"><span style="width:${Math.max(4, (entry.score / max) * 100)}%"></span></div>
             </td>
             <td>${escapeHtml(entry.detail)}</td>
-            <td><span class="leader-stars">⭐ ${entry.score}</span></td>
+            <td><span class="leader-stars">🪙 ${entry.score}</span></td>
           </tr>
         `).join("")}
       </tbody>
@@ -962,7 +962,7 @@ function animateReward(origin, delta) {
   for (let i = 0; i < 10; i += 1) {
     const star = document.createElement("span");
     star.className = "flying-star";
-    star.textContent = delta >= 0 ? "⭐" : "☆";
+    star.textContent = delta >= 0 ? "🪙" : "◌";
     star.style.left = `${rect.left + rect.width / 2}px`;
     star.style.top = `${rect.top + rect.height / 2}px`;
     star.style.setProperty("--dx", `${Math.random() * 220 - 110}px`);
@@ -973,7 +973,7 @@ function animateReward(origin, delta) {
   }
 
   if (delta > 0) {
-    const confettiColors = ["#FFB8DC", "#C8B6FF", "#A8D8FF", "#B8F2D0", "#FFE58F"];
+    const confettiColors = ["#FFD54F", "#F59E2D", "#29C2E1", "#43B84B", "#E85A3C"];
     for (let i = 0; i < 16; i += 1) {
       const piece = document.createElement("span");
       piece.className = "flying-confetti";
